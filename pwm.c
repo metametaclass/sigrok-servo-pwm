@@ -5,6 +5,8 @@
 #include <assert.h>
 #include <math.h>
 
+#include <getopt.h>
+
 #define BUFFER_SIZE 80
 #define MAX_PROBES 16
 #define AVERAGER_SIZE 400
@@ -24,7 +26,7 @@ void init_average(average_data_t *avg){
         memset(avg, 0, sizeof(average_data_t));
 }
 
-int cmp_int(void *p1, void *p2){
+int cmp_int(const void *p1, const void *p2){
         return (*(int*)p1)-(*(int*)p2);
 }
 
@@ -42,21 +44,6 @@ void update_average_from_array(average_data_t *avg, int* array, int size){
         }
         avg->rmsd = sqrt(rmsd/size);
 
-        /*
-        int median[AVERAGER_SIZE];
-        int median_idx=0;
-        for(int i=circular_index-average_n;i<circular_index;i++){
-                average+=avg.buffer[i];
-                median[median_idx++]=avg.buffer[i];
-        }
-        ASSERT(median_idx==average_n);
-        
-
-        double rmsd=0;
-        for(int i=0;i<average_n;i++){
-        }
-        avg.rmsd = sqrt(rmsd/average_n);
-        */
 }
 
 void update_average(average_data_t *avg, int value){
@@ -180,7 +167,6 @@ int process_probe(context_t *ctx, int probe_idx, char buffer[]){
                         return 2;
                 }
                 int r;
-                
                 r = feed_data(probe, digit_h);
                 if(r){
                         fprintf(stderr, "feed_data digit_h error %d", r);
@@ -200,13 +186,37 @@ int process_probe(context_t *ctx, int probe_idx, char buffer[]){
         return 0;
 }
 
-int main(int c, char** args){
+void show_help(){
+        printf("Usage: pwm [-n buffer_length] [-h] < sigrok_hex_file\n");
+}
+
+int main(int argc, char** argv){
         char buffer[BUFFER_SIZE];
         bool started=false;
         context_t context;
         int line_num=1;
         context.probes_n = 0;
         context.max_time = 0;
+        int ch;
+
+        static struct option longopts[] = {
+                { "help", no_argument, NULL, 'h' },
+                { "length", required_argument, NULL, 'n' },
+                { NULL, 0, NULL, 0 }
+        };
+
+        while ((ch = getopt_long(argc, argv, "hn:", longopts, NULL)) != -1)
+                switch (ch) {
+                case 'h':
+                    show_help(); 
+                    return 0;
+                case 'n':
+                    average_n = atoi(optarg);
+                    break;
+                default:
+                    show_help();
+                    return 1;
+        }
 
 
         while(fgets(buffer, BUFFER_SIZE, stdin)){

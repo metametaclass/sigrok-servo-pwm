@@ -2,7 +2,7 @@ PWM = pwm
 CC = gcc
 OBJ_DIR = obj
 
-CFLAGS = -std=gnu99 -Wall
+CFLAGS = -std=gnu99 -Wall -Wextra -Werror -DDEBUG
 LDFLAGS = -lm
 
 SRC = pwm.c
