@@ -3,6 +3,7 @@ CC = gcc
 OBJ_DIR = obj
 
 CFLAGS = -std=gnu99 -Wall
+LDFLAGS = -lm
 
 SRC = pwm.c
 
