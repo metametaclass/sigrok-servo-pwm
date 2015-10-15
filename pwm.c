@@ -213,7 +213,6 @@ int process_probe(context_t *ctx, int probe_idx, char buffer[]){
         if(probe_idx>=ctx->probes_n){
                 int i = ctx->probes_n;
                 while(i<=probe_idx){
-                        //TODO: different start time for probes?
                         probe_data_t *probe = &ctx->probes[i];
                         probe->time = 0;
                         probe->last_value = 0;
@@ -288,16 +287,33 @@ void dump_average(char *name, average_data_t *avg, int samplerate){
         printf("\n");
 }
 
+//dump brief data averaging result
+void dump_average_brief(average_data_t *avg, int samplerate){        
+        if(samplerate>0) {
+                double koeff = 1000.0/samplerate;
+                printf("a:%f d:%f m:%f\n", avg->average*koeff, avg->rmsd*koeff, avg->median*koeff);
+        }else{
+                printf("a:%f d:%f m:%d\n", avg->average, avg->rmsd, avg->median);
+        }          
+}
+
+
 //dump probe averages
-void dump_result(context_t *ctx, int samplerate){
+void dump_result(context_t *ctx, int samplerate, bool brief){
         for(int i=0;i<ctx->probes_n;i++){
                 probe_data_t *probe = &ctx->probes[i];
-                printf("probe: %d", i);
+                printf("p: %d ", i);
                 if(!probe_has_enough_data(probe)){
                         printf("no data\n");
                         continue;
                 }
-                printf(" pulses:%d\n", probe->pulse_count);
+                if(brief){
+                        printf("c:%d ", probe->pulse_count); 
+                        dump_average_brief(&probe->pulse_width_avg, samplerate);
+                        //dump_average_brief(&probe->period_avg, samplerate);
+                        continue;
+                }
+                printf("pulses:%d\n", probe->pulse_count); 
                 dump_average("  width:  ", &probe->pulse_width_avg, samplerate);
                 dump_average("  period: ", &probe->period_avg, samplerate);
         }
@@ -340,7 +356,7 @@ int process_data(context_t *ctx, int samplerate){
                         if(diffts(lts, ts)>250){
                                 printf("\x1B[1;1H");
                                 printf("%d\n", line_num);
-                                dump_result(ctx, samplerate);
+                                dump_result(ctx, samplerate, true);
                                 lts=ts;
                         }
 
@@ -353,7 +369,9 @@ int process_data(context_t *ctx, int samplerate){
 
 //usage help
 void show_help(){
-        printf("Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v] [-h] < sigrok_hex_file\n");
+        printf("pwm (servo) signal analyzer, for using with sigrok logic analyzer software");
+        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v] [-h] < sigrok_hex_file\n");
+        printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20\n");
 }
 
 
@@ -401,7 +419,7 @@ int main(int argc, char** argv){
                 fprintf(stderr, "error process_data %d\n", r);
                 return 1;
         }
-        dump_result(&context, samplerate);
+        dump_result(&context, samplerate, false);
 
         return 0;
 }
