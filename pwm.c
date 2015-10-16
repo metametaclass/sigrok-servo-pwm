@@ -18,6 +18,7 @@
 int average_n = 10;//0.025s * 400 Hz
 
 int verbose = 0;
+FILE *dump_file = NULL;
 
 #define DETAIL 10
 
@@ -31,11 +32,12 @@ typedef struct average_data {
         double average;
         double rmsd;
 
+        int last_value;
         int median;
         int min_value;
         int max_value;
         int min_value_filtered;
-        int max_value_filtered;        
+        int max_value_filtered;
 } average_data_t;
 
 
@@ -94,7 +96,8 @@ bool average_has_enough_data(average_data_t *avg){
 //update averages with new sample
 void update_average(average_data_t *avg, int value){
 
-        avg->buffer[avg->circular_index]=value;
+        avg->last_value = value;
+        avg->buffer[avg->circular_index] = value;
         avg->data_count++;
         avg->circular_index++;
         avg->min_value = min(avg->min_value, value);
@@ -172,7 +175,7 @@ int from_hex(char digit){
 }
 
 //feed 4 bit from probe to edge detector and timing calculation
-int feed_data(probe_data_t *data, int digit){
+int feed_data(int probe_idx, probe_data_t *data, int digit){
         if(digit<0 || digit>15){
                 return 3;
         }
@@ -196,6 +199,14 @@ int feed_data(probe_data_t *data, int digit){
                                 data->pulse_count++;
                         }
                         data->rising_edge_time = data->time;
+                        if((dump_file!=NULL) && probe_has_enough_data(data)){
+                                fprintf(dump_file, "%d,%d,%d,%d,%d,%d,%f,%f,%f,%f\n",
+                                        probe_idx, data->time,
+                                        data->pulse_width_avg.last_value, data->period_avg.last_value,
+                                        data->pulse_width_avg.median, data->period_avg.median,
+                                        data->pulse_width_avg.average, data->period_avg.average,
+                                        data->pulse_width_avg.rmsd, data->period_avg.rmsd);
+                        }
                 }
 
                 data->last_value = value;
@@ -241,12 +252,12 @@ int process_probe(context_t *ctx, int probe_idx, char buffer[]){
                 }
 
                 int r;
-                r = feed_data(probe, digit_h);
+                r = feed_data(probe_idx, probe, digit_h);
                 if(r){
                         fprintf(stderr, "feed_data digit_h error %d", r);
                         return r;
                 }
-                feed_data(probe, digit_l);
+                feed_data(probe_idx, probe, digit_l);
                 if(r){
                         fprintf(stderr, "feed_data digit_l error %d", r);
                         return r;
@@ -277,26 +288,26 @@ void dump_average(char *name, average_data_t *avg, int samplerate){
                 printf("no data\n");
                 return;
         }
-        printf("avg:%f rmsd:%f median:%d min:%d max:%d min_f:%d max_f:%d\n", avg->average, avg->rmsd, avg->median, 
+        printf("avg:%f rmsd:%f median:%d min:%d max:%d min_f:%d max_f:%d\n", avg->average, avg->rmsd, avg->median,
                         avg->min_value, avg->max_value, avg->min_value_filtered, avg->max_value_filtered);
 
         if(samplerate>0) {
                 printf("%s:", name);
                 double koeff = 1000.0/samplerate;
-                printf("avg:%f rmsd:%f median:%f min:%f max:%f min_f:%f max_f:%f\n", avg->average*koeff, avg->rmsd*koeff, avg->median*koeff, 
+                printf("avg:%f rmsd:%f median:%f min:%f max:%f min_f:%f max_f:%f\n", avg->average*koeff, avg->rmsd*koeff, avg->median*koeff,
                                 avg->min_value*koeff, avg->max_value*koeff, avg->min_value_filtered*koeff, avg->max_value_filtered*koeff);
         }
         printf("\n");
 }
 
 //dump brief data averaging result
-void dump_average_brief(average_data_t *avg, int samplerate){        
+void dump_average_brief(average_data_t *avg, int samplerate){
         if(samplerate>0) {
                 double koeff = 1000.0/samplerate;
-                printf("a:%f d:%f m:%f\n", avg->average*koeff, avg->rmsd*koeff, avg->median*koeff);
+                printf("l:%4.0f a:%4.0f m:%4.0f d:%4.0f \n", avg->last_value*koeff, avg->average*koeff, avg->median*koeff, avg->rmsd*koeff);
         }else{
-                printf("a:%f d:%f m:%d\n", avg->average, avg->rmsd, avg->median);
-        }          
+                printf("l:%4d a:%4.1f m:%4d d:%4.1f \n", avg->last_value, avg->average, avg->median, avg->rmsd);
+        }
 }
 
 
@@ -310,12 +321,12 @@ void dump_result(context_t *ctx, int samplerate, bool brief){
                         continue;
                 }
                 if(brief){
-                        printf("c:%d ", probe->pulse_count); 
+                        printf("c:%d ", probe->pulse_count);
                         dump_average_brief(&probe->pulse_width_avg, samplerate);
                         //dump_average_brief(&probe->period_avg, samplerate);
                         continue;
                 }
-                printf("pulses:%d\n", probe->pulse_count); 
+                printf("pulses:%d\n", probe->pulse_count);
                 dump_average("  width:  ", &probe->pulse_width_avg, samplerate);
                 dump_average("  period: ", &probe->period_avg, samplerate);
         }
@@ -372,7 +383,7 @@ int process_data(context_t *ctx, int samplerate){
 //usage help
 void show_help(){
         printf("pwm (servo) signal analyzer, for using with sigrok logic analyzer software\n");
-        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v] [-h] < sigrok_hex_file\n");
+        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v debug_level] [-d data_dump_file] [-h] < sigrok_hex_file\n");
         printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20\n");
 }
 
@@ -388,11 +399,12 @@ int main(int argc, char** argv){
                 { "verbose", required_argument, NULL, 'v' },
                 { "length", required_argument, NULL, 'n' },
                 { "samplerate", required_argument, NULL, 's' },
+                { "dump", required_argument, NULL, 'd' },
 
                 { NULL, 0, NULL, 0 }
         };
 
-        while ((ch = getopt_long(argc, argv, "hv:n:s:", longopts, NULL)) != -1)
+        while ((ch = getopt_long(argc, argv, "hv:n:s:d:", longopts, NULL)) != -1)
                 switch (ch) {
                 case 'h':
                     show_help();
@@ -406,11 +418,14 @@ int main(int argc, char** argv){
                 case 's':
                     samplerate = atoi(optarg);
                     break;
+                case 'd':
+                    dump_file = fopen(optarg, "w");
+                    break;
                 default:
                     show_help();
                     return 1;
         }
-      
+
 
         //init context
         context.probes_n = 0;
@@ -420,6 +435,9 @@ int main(int argc, char** argv){
         if(r){
                 fprintf(stderr, "error process_data %d\n", r);
                 return 1;
+        }
+        if(dump_file) {
+                fclose(dump_file);
         }
         dump_result(&context, samplerate, false);
 
