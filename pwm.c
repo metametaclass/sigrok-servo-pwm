@@ -10,7 +10,7 @@
 #include <getopt.h>
 #include <errno.h>
 
-#define BUFFER_SIZE 80
+#define BUFFER_SIZE 160
 #define MAX_PROBES 16
 #define AVERAGER_SIZE 400
 
@@ -177,10 +177,10 @@ int feed_data(probe_data_t *data, int digit){
                 return 3;
         }
         if(verbose>DETAIL) {
-                fprintf(stderr, "%4x", digit);
+                fprintf(stderr, "%1x", digit);
         }
 
-        for(int i=0;i<3;i++){
+        for(int i=0;i<4;i++){
                 int value = digit>>3;
                 if(data->last_value!=0 && value==0){
                         //falling edge
@@ -254,9 +254,11 @@ int process_probe(context_t *ctx, int probe_idx, char buffer[]){
                 time = probe->time;
                 p+=3;
         }
-        if(time>ctx->max_time){
-                ctx->max_time = time;//where is my max?
+        ctx->max_time = max(ctx->max_time, time);
+        if(verbose>DETAIL) {
+                fprintf(stderr, " %d %d\n", ctx->max_time, time);
         }
+
         return 0;
 }
 
@@ -369,7 +371,7 @@ int process_data(context_t *ctx, int samplerate){
 
 //usage help
 void show_help(){
-        printf("pwm (servo) signal analyzer, for using with sigrok logic analyzer software");
+        printf("pwm (servo) signal analyzer, for using with sigrok logic analyzer software\n");
         printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v] [-h] < sigrok_hex_file\n");
         printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20\n");
 }
@@ -383,14 +385,14 @@ int main(int argc, char** argv){
 
         static struct option longopts[] = {
                 { "help", no_argument, NULL, 'h' },
-                { "verbose", optional_argument, NULL, 'v' },
+                { "verbose", required_argument, NULL, 'v' },
                 { "length", required_argument, NULL, 'n' },
                 { "samplerate", required_argument, NULL, 's' },
 
                 { NULL, 0, NULL, 0 }
         };
 
-        while ((ch = getopt_long(argc, argv, "hv::n:s:", longopts, NULL)) != -1)
+        while ((ch = getopt_long(argc, argv, "hv:n:s:", longopts, NULL)) != -1)
                 switch (ch) {
                 case 'h':
                     show_help();
