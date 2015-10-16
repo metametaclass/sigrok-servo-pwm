@@ -156,6 +156,7 @@ typedef struct context{
         int probes_n;
         probe_data_t probes[MAX_PROBES];
         int max_time;
+        int line_num;
 } context_t;
 
 
@@ -174,8 +175,40 @@ int from_hex(char digit){
         return -1;
 }
 
+
+void feed_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
+
+         if(data->last_value!=0 && value==0){
+                 //falling edge
+                 if(data->rising_edge_time>=0){
+                         update_average(&data->pulse_width_avg, data->time - data->rising_edge_time);
+                 }
+                 data->falling_edge_time = data->time;
+         }
+         if(data->last_value==0 && value!=0){
+                 //rising edge
+                 if(data->rising_edge_time>=0){
+                         update_average(&data->period_avg, data->time - data->rising_edge_time);
+                         data->pulse_count++;
+                 }
+                 data->rising_edge_time = data->time;
+                 if((dump_file!=NULL) && probe_has_enough_data(data)){
+                         fprintf(dump_file, "%d,%d,%d,%d,%d,%d,%d,%f,%f,%f,%f\n",
+                                 probe_idx, ctx->line_num, data->time,
+                                 data->pulse_width_avg.last_value, data->period_avg.last_value,
+                                 data->pulse_width_avg.median, data->period_avg.median,
+                                 data->pulse_width_avg.average, data->period_avg.average,
+                                 data->pulse_width_avg.rmsd, data->period_avg.rmsd);
+                 }
+         }
+
+         data->last_value = value;
+         data->time++;
+
+}
+
 //feed 4 bit from probe to edge detector and timing calculation
-int feed_data(int probe_idx, probe_data_t *data, int digit){
+int feed_data(context_t *ctx, int probe_idx, probe_data_t *data, int digit){
         if(digit<0 || digit>15){
                 return 3;
         }
@@ -185,56 +218,36 @@ int feed_data(int probe_idx, probe_data_t *data, int digit){
 
         for(int i=0;i<4;i++){
                 int value = digit>>3;
-                if(data->last_value!=0 && value==0){
-                        //falling edge
-                        if(data->rising_edge_time>=0){
-                                update_average(&data->pulse_width_avg, data->time - data->rising_edge_time);
-                        }
-                        data->falling_edge_time = data->time;
-                }
-                if(data->last_value==0 && value!=0){
-                        //rising edge
-                        if(data->rising_edge_time>=0){
-                                update_average(&data->period_avg, data->time - data->rising_edge_time);
-                                data->pulse_count++;
-                        }
-                        data->rising_edge_time = data->time;
-                        if((dump_file!=NULL) && probe_has_enough_data(data)){
-                                fprintf(dump_file, "%d,%d,%d,%d,%d,%d,%f,%f,%f,%f\n",
-                                        probe_idx, data->time,
-                                        data->pulse_width_avg.last_value, data->period_avg.last_value,
-                                        data->pulse_width_avg.median, data->period_avg.median,
-                                        data->pulse_width_avg.average, data->period_avg.average,
-                                        data->pulse_width_avg.rmsd, data->period_avg.rmsd);
-                        }
-                }
-
-                data->last_value = value;
-                data->time++;
+                feed_bit(ctx, probe_idx, data, value);  
                 digit<<=1;
+        }
+        return 0;
+}
+
+int init_probes(context_t *ctx, int probe_idx){
+        if(probe_idx<0 || probe_idx>=MAX_PROBES){
+                return 1;
+        }
+
+        while(ctx->probes_n<=probe_idx){
+                probe_data_t *probe = &ctx->probes[ctx->probes_n];
+                probe->time = 0;
+                probe->last_value = 0;
+                probe->rising_edge_time = -1;
+                probe->falling_edge_time = -1;
+                probe->pulse_count = 0;
+                init_average(&probe->period_avg);
+                init_average(&probe->pulse_width_avg);
+                ctx->probes_n++;
         }
         return 0;
 }
 
 //process probe data line
 int process_probe(context_t *ctx, int probe_idx, char buffer[]){
-        if(probe_idx<0 || probe_idx>=MAX_PROBES){
-                return 1;
-        }
-        if(probe_idx>=ctx->probes_n){
-                int i = ctx->probes_n;
-                while(i<=probe_idx){
-                        probe_data_t *probe = &ctx->probes[i];
-                        probe->time = 0;
-                        probe->last_value = 0;
-                        probe->rising_edge_time = -1;
-                        probe->falling_edge_time = -1;
-                        probe->pulse_count = 0;
-                        init_average(&probe->period_avg);
-                        init_average(&probe->pulse_width_avg);
-                        i++;
-                }
-                ctx->probes_n = probe_idx+1;
+        int r = init_probes(ctx, probe_idx);
+        if(r!=0){ 
+                return r;
         }
         if(verbose>DETAIL) {
                 fprintf(stderr, "probe: %d ", probe_idx);
@@ -252,12 +265,12 @@ int process_probe(context_t *ctx, int probe_idx, char buffer[]){
                 }
 
                 int r;
-                r = feed_data(probe_idx, probe, digit_h);
+                r = feed_data(ctx, probe_idx, probe, digit_h);
                 if(r){
                         fprintf(stderr, "feed_data digit_h error %d", r);
                         return r;
                 }
-                feed_data(probe_idx, probe, digit_l);
+                r = feed_data(ctx, probe_idx, probe, digit_l);
                 if(r){
                         fprintf(stderr, "feed_data digit_l error %d", r);
                         return r;
@@ -334,11 +347,10 @@ void dump_result(context_t *ctx, int samplerate, bool brief){
 
 
 //process incoming data
-int process_data(context_t *ctx, int samplerate){
+int process_data_hex(context_t *ctx, int samplerate){
 
         char buffer[BUFFER_SIZE];
         bool started=false;
-        int line_num=1;
 
         struct timespec lts;
         if(clock_gettime(CLOCK_MONOTONIC, &lts)!=0){
@@ -352,13 +364,13 @@ int process_data(context_t *ctx, int samplerate){
 
                 started |= is_data;
                 if(started && !is_data){
-                        fprintf(stderr, "error, no data line %d %s",line_num, buffer);
+                        fprintf(stderr, "error, no data line %d %s", ctx->line_num, buffer);
                         return 1;
                 }
                 if(started){
                         int r = process_probe(ctx, probe-'0', buffer);
                         if(r){
-                                fprintf(stderr, "process_probe error %d line:%d %s", r, line_num, buffer);
+                                fprintf(stderr, "process_probe error %d line:%d %s", r, ctx->line_num, buffer);
                                 return r;
                         }
                         struct timespec ts;
@@ -368,13 +380,52 @@ int process_data(context_t *ctx, int samplerate){
                         }
                         if(diffts(lts, ts)>250){
                                 printf("\x1B[1;1H");
-                                printf("%d\n", line_num);
+                                printf("%d\n", ctx->line_num);
                                 dump_result(ctx, samplerate, true);
                                 lts=ts;
                         }
 
                 }
-                line_num++;
+                ctx->line_num++;
+        }
+        return 0;
+}
+
+
+
+//process incoming data
+int process_data_binary(context_t *ctx, int samplerate){
+
+        struct timespec lts;
+        if(clock_gettime(CLOCK_MONOTONIC, &lts)!=0){
+                fprintf(stderr, "error get clock %s\n", strerror(errno));
+                return 1;
+        }
+        init_probes(ctx, 7);//0-7 probes
+        int i;
+        while((i=fgetc(stdin))!=EOF){
+                //printf("%p %s\n", buffer, buffer);
+                int mask = 1;
+                for(int probe_idx=0;probe_idx<8;probe_idx++){
+                        feed_bit(ctx, probe_idx, &ctx->probes[probe_idx], i & mask);
+                        mask<<=1;
+                }
+
+                if((ctx->line_num & 0xFFF)==0){
+                        struct timespec ts;
+                        if(clock_gettime(CLOCK_MONOTONIC, &ts)!=0){
+                                fprintf(stderr, "error get clock %s\n", strerror(errno));
+                                return 1;
+                        }
+                        if(diffts(lts, ts)>250){
+                                printf("\x1B[1;1H");
+                                printf("%d\n", ctx->line_num);
+                                dump_result(ctx, samplerate, true);
+                                lts=ts;
+                        }
+                }
+
+                ctx->line_num++;
         }
         return 0;
 }
@@ -383,8 +434,9 @@ int process_data(context_t *ctx, int samplerate){
 //usage help
 void show_help(){
         printf("pwm (servo) signal analyzer, for using with sigrok logic analyzer software\n");
-        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v debug_level] [-d data_dump_file] [-h] < sigrok_hex_file\n");
-        printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20\n");
+        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v debug_level] [-d data_dump_file] [-h] < sigrok_binary_file\n");
+        //printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20\n");//hex mode has sample losing issues 
+        printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=100k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O binary | ./pwm -s 100 -d values.csv\n");
 }
 
 
@@ -393,6 +445,7 @@ int main(int argc, char** argv){
         context_t context;
         int ch;
         int samplerate=0;
+        bool binary_fmt = true;//sigrok hex mode has bug - skips samples
 
         static struct option longopts[] = {
                 { "help", no_argument, NULL, 'h' },
@@ -400,11 +453,12 @@ int main(int argc, char** argv){
                 { "length", required_argument, NULL, 'n' },
                 { "samplerate", required_argument, NULL, 's' },
                 { "dump", required_argument, NULL, 'd' },
+                //{ "binary", no_argument, NULL, 'b' },
 
                 { NULL, 0, NULL, 0 }
         };
 
-        while ((ch = getopt_long(argc, argv, "hv:n:s:d:", longopts, NULL)) != -1)
+        while ((ch = getopt_long(argc, argv, "hv:n:s:d:b", longopts, NULL)) != -1)
                 switch (ch) {
                 case 'h':
                     show_help();
@@ -421,21 +475,31 @@ int main(int argc, char** argv){
                 case 'd':
                     dump_file = fopen(optarg, "w");
                     break;
+                //case 'b':
+                //    binary_fmt = true;
+                //    break;
                 default:
                     show_help();
                     return 1;
         }
 
-
         //init context
         context.probes_n = 0;
         context.max_time = 0;
+        context.line_num = 1;
 
-        int r = process_data(&context, samplerate);
+        int r = 0;
+        if(binary_fmt){
+                r = process_data_binary(&context, samplerate);
+        }else{
+                //r = process_data_hex(&context, samplerate);
+                r = 1;
+        }
         if(r){
                 fprintf(stderr, "error process_data %d\n", r);
                 return 1;
         }
+
         if(dump_file) {
                 fclose(dump_file);
         }
