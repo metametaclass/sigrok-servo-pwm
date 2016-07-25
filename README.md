@@ -8,7 +8,7 @@ Usage steps:
 * Power on transmitter/receiver/flightcontroller
 * run 
 ```
-sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20 
+sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O binary | ./pwm -s 20 
 ```
 
 # sigrok
