@@ -134,7 +134,7 @@ void update_average(average_data_t *avg, int value){
         }
 }
 
-#define MAX_SBUS_PACKET_SIZE 25
+#define MAX_SBUS_PACKET_SIZE 128
 
 //probe(logic input) data and timing
 typedef struct probe_data{
@@ -159,6 +159,9 @@ typedef struct probe_data{
         int sbus_last_byte_time;
         int sbus_byte_counter;
         uint8_t sbus_packet[MAX_SBUS_PACKET_SIZE];
+
+        int sbus_byte_counter_last;
+        uint8_t sbus_packet_last[MAX_SBUS_PACKET_SIZE];
 
         average_data_t pulse_width_avg;
         average_data_t period_avg;
@@ -235,6 +238,8 @@ void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
             data->parity_errors++;
         }else{
             if( (data->time - data->sbus_last_byte_time) > 22*ctx->bit_interval) {                
+                data->sbus_byte_counter_last = data->sbus_byte_counter;
+                memcpy(data->sbus_packet_last, data->sbus_packet, sizeof(data->sbus_packet));
                 if((dump_file!=NULL)){
                         fprintf(dump_file, "t:%8.8x p:%d data:", data->time, probe_idx);
                         for(int i=0;i<data->sbus_byte_counter;i++){
@@ -344,6 +349,7 @@ int init_probes(context_t *ctx, int probe_idx, bool sbus_mode){
                 probe->stop_bits = 0;
                 probe->sbus_last_byte_time = 0;
                 probe->sbus_byte_counter = 0;
+                probe->sbus_byte_counter_last = 0;
 
                 init_average(&probe->period_avg);
                 init_average(&probe->pulse_width_avg);
@@ -416,7 +422,13 @@ void dump_result(context_t *ctx, int samplerate, bool brief){
 void dump_result_sbus(context_t *ctx){
         for(int i=0;i<ctx->probes_n;i++){
                 probe_data_t *probe = &ctx->probes[i];
-                printf("p:%d errors:%d parity_errors:%d bytes:%d\n", i, probe->sbus_errors, probe->parity_errors, probe->sbus_bytes);
+                printf("p:%d errors:%d parity_errors:%d bytes:%d packet:%d\n", i, probe->sbus_errors, probe->parity_errors, probe->sbus_bytes, probe->sbus_byte_counter_last);
+                if(probe->sbus_byte_counter_last>0){
+                        for(int j=0;j<probe->sbus_byte_counter_last;j++){
+                                printf("%2.2x ", probe->sbus_packet_last[j]);
+                        }
+                        printf("\n");
+                }
         }
 }
 

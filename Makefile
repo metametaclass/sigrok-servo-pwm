@@ -26,3 +26,7 @@ test_sbus: $(PWM)
 
 test_pwm: $(PWM)
 	./$(PWM) -s 100 -d values.csv <probe_all.bin >r
+
+
+run_sbus: $(PWM)
+	sigrok-cli -d fx2lafw --config samplerate=2m --continuous -p 0,1 -o /dev/stdout -O binary | ./pwm -s 2000 -b -d values.csv
