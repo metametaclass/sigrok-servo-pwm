@@ -221,7 +221,7 @@ void feed_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
 void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
         (void) ctx;
         if((dump_file!=NULL)){
-                fprintf(dump_file, "%d,%2.2x\n", probe_idx, data->sbus_bits);
+                fprintf(dump_file, "t:%8.8x p:%d v:%4.4x\n", data->time, probe_idx, data->sbus_bits);
         }
         data->sbus_bytes++;
 }
@@ -240,21 +240,21 @@ void process_sbus_bit(context_t *ctx, int probe_idx, probe_data_t *data, int val
             data->sbus_errors++;
             return;
         }
-          
+
         if (((shift + ctx->bit_interval/2) % ctx->bit_interval) == 0) {
-           if(data->sbus_bit_counter>11){
-              check_sbus_byte(ctx, probe_idx, data);
-              data->is_sbus_active = 0;
-           } else {
-              //sample bit
-              data->sbus_bits <<= 1;
-              if(value) {
-                  data->sbus_bits |= 1;
-              }
-              data->sbus_bit_counter++;
-           }
-        }                
- 
+           //sample bit
+            //printf("sample at %8.8x\n", data->time);
+            data->sbus_bits <<= 1;
+            if(value) {
+                 data->sbus_bits |= 1;
+            }
+            data->sbus_bit_counter++;           
+            if(data->sbus_bit_counter>=11){
+               check_sbus_byte(ctx, probe_idx, data);
+               data->is_sbus_active = 0;
+            }
+        }
+
 }
 
 
@@ -264,14 +264,14 @@ void feed_bit_sbus(context_t *ctx, int probe_idx, probe_data_t *data, int value)
                 process_sbus_bit(ctx, probe_idx, data, value);
         } else {
                 if(data->last_value==0 && value!=0){
-                        printf("%d rise at %8.8x\n", probe_idx, data->time);
+                        //printf("%d rise at %8.8x\n", probe_idx, data->time);
                         //rising edge
                         data->is_sbus_active = 1;//start sbus decode
                         data->sbus_start_time = data->time;
                         data->sbus_bits = 0;
                         data->sbus_bit_counter = 0;
                         data->start_bit_count = 0;
-                }   
+                }
         }
         data->last_value = value;
         data->time++;
@@ -369,7 +369,7 @@ void dump_result(context_t *ctx, int samplerate, bool brief){
 void dump_result_sbus(context_t *ctx){
         for(int i=0;i<ctx->probes_n;i++){
                 probe_data_t *probe = &ctx->probes[i];
-                printf("p: %d %d %d\n", i, probe->sbus_errors, probe->sbus_bytes);
+                printf("p:%d errors:%d bytes:%d\n", i, probe->sbus_errors, probe->sbus_bytes);
         }
 }
 
@@ -393,7 +393,7 @@ int process_data_binary(context_t *ctx, int samplerate, bool sbus_mode){
                         } else {
                                 feed_bit(ctx, probe_idx, &ctx->probes[probe_idx], i & mask);
                         }
-                        
+
                         mask<<=1;
                 }
 
