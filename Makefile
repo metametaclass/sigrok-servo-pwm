@@ -23,3 +23,6 @@ $(OBJ_DIR)/%.o: %.c
 
 test_sbus: $(PWM)
 	./$(PWM) -s 2000 -b -d values.csv <test_data_sbus >r
+
+test_pwm: $(PWM)
+	./$(PWM) -s 100 -d values.csv <probe_all.bin >r
