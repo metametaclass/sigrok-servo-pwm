@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <math.h>
+#include <stdint.h>
 
 #include <time.h>
 #include <limits.h>
@@ -142,6 +143,15 @@ typedef struct probe_data{
         int falling_edge_time;
         int pulse_count;
 
+        bool is_sbus_mode;
+        int is_sbus_active;
+        int sbus_start_time;
+        int sbus_bit_counter;
+        int start_bit_count;
+        int sbus_errors;
+        int sbus_bytes;
+        uint16_t sbus_bits;
+
         average_data_t pulse_width_avg;
         average_data_t period_avg;
 
@@ -155,6 +165,7 @@ bool probe_has_enough_data(probe_data_t *probe){
 typedef struct context{
         int probes_n;
         probe_data_t probes[MAX_PROBES];
+        int bit_interval;
         int max_time;
         int line_num;
 } context_t;
@@ -207,24 +218,68 @@ void feed_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
 
 }
 
-//feed 4 bit from probe to edge detector and timing calculation
-int feed_data(context_t *ctx, int probe_idx, probe_data_t *data, int digit){
-        if(digit<0 || digit>15){
-                return 3;
+void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
+        (void) ctx;
+        if((dump_file!=NULL)){
+                fprintf(dump_file, "%d,%2.2x\n", probe_idx, data->sbus_bits);
         }
-        if(verbose>DETAIL) {
-                fprintf(stderr, "%1x", digit);
-        }
-
-        for(int i=0;i<4;i++){
-                int value = digit>>3;
-                feed_bit(ctx, probe_idx, data, value);  
-                digit<<=1;
-        }
-        return 0;
+        data->sbus_bytes++;
 }
 
-int init_probes(context_t *ctx, int probe_idx){
+void process_sbus_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
+        int shift = data->time - data->sbus_start_time;
+        if(shift<ctx->bit_interval) {
+            if(value){
+                data->start_bit_count++;
+            }
+            return;
+        }
+        //printf("%d count start %d\n", probe_idx, data->start_bit_count);
+        if(data->start_bit_count < ctx->bit_interval/2){
+            data->is_sbus_active = 0;
+            data->sbus_errors++;
+            return;
+        }
+          
+        if (((shift + ctx->bit_interval/2) % ctx->bit_interval) == 0) {
+           if(data->sbus_bit_counter>11){
+              check_sbus_byte(ctx, probe_idx, data);
+              data->is_sbus_active = 0;
+           } else {
+              //sample bit
+              data->sbus_bits <<= 1;
+              if(value) {
+                  data->sbus_bits |= 1;
+              }
+              data->sbus_bit_counter++;
+           }
+        }                
+ 
+}
+
+
+void feed_bit_sbus(context_t *ctx, int probe_idx, probe_data_t *data, int value){
+        if(data->is_sbus_active) {
+                //printf("%d sbus_bit %d\n", probe_idx, value);
+                process_sbus_bit(ctx, probe_idx, data, value);
+        } else {
+                if(data->last_value==0 && value!=0){
+                        printf("%d rise at %8.8x\n", probe_idx, data->time);
+                        //rising edge
+                        data->is_sbus_active = 1;//start sbus decode
+                        data->sbus_start_time = data->time;
+                        data->sbus_bits = 0;
+                        data->sbus_bit_counter = 0;
+                        data->start_bit_count = 0;
+                }   
+        }
+        data->last_value = value;
+        data->time++;
+
+}
+
+
+int init_probes(context_t *ctx, int probe_idx, bool sbus_mode){
         if(probe_idx<0 || probe_idx>=MAX_PROBES){
                 return 1;
         }
@@ -236,53 +291,17 @@ int init_probes(context_t *ctx, int probe_idx){
                 probe->rising_edge_time = -1;
                 probe->falling_edge_time = -1;
                 probe->pulse_count = 0;
+                probe->is_sbus_mode = sbus_mode;
+                probe->is_sbus_active = 0;
+                probe->sbus_bit_counter = 0;
+                probe->sbus_start_time = 0;
+                probe->start_bit_count = 0;
+                probe->sbus_bits = 0;
+                probe->sbus_errors = 0;
                 init_average(&probe->period_avg);
                 init_average(&probe->pulse_width_avg);
                 ctx->probes_n++;
         }
-        return 0;
-}
-
-//process probe data line
-int process_probe(context_t *ctx, int probe_idx, char buffer[]){
-        int r = init_probes(ctx, probe_idx);
-        if(r!=0){ 
-                return r;
-        }
-        if(verbose>DETAIL) {
-                fprintf(stderr, "probe: %d ", probe_idx);
-        }
-
-        int p=2;
-        probe_data_t *probe = &ctx->probes[probe_idx];
-        int time = probe->time;
-        while(p<BUFFER_SIZE-3 && buffer[p]!='\n' && buffer[p]!=0){
-                int digit_h = from_hex(buffer[p]);
-                int digit_l = from_hex(buffer[p+1]);
-                char space = buffer[p+2];
-                if(space!=' ' || digit_h<0 || digit_l<0){
-                        return 2;
-                }
-
-                int r;
-                r = feed_data(ctx, probe_idx, probe, digit_h);
-                if(r){
-                        fprintf(stderr, "feed_data digit_h error %d", r);
-                        return r;
-                }
-                r = feed_data(ctx, probe_idx, probe, digit_l);
-                if(r){
-                        fprintf(stderr, "feed_data digit_l error %d", r);
-                        return r;
-                }
-                time = probe->time;
-                p+=3;
-        }
-        ctx->max_time = max(ctx->max_time, time);
-        if(verbose>DETAIL) {
-                fprintf(stderr, " %d %d\n", ctx->max_time, time);
-        }
-
         return 0;
 }
 
@@ -346,68 +365,35 @@ void dump_result(context_t *ctx, int samplerate, bool brief){
 }
 
 
-//process incoming data
-int process_data_hex(context_t *ctx, int samplerate){
-
-        char buffer[BUFFER_SIZE];
-        bool started=false;
-
-        struct timespec lts;
-        if(clock_gettime(CLOCK_MONOTONIC, &lts)!=0){
-                fprintf(stderr, "error get clock %s\n", strerror(errno));
-                return 1;
+//dump probe sbus data
+void dump_result_sbus(context_t *ctx){
+        for(int i=0;i<ctx->probes_n;i++){
+                probe_data_t *probe = &ctx->probes[i];
+                printf("p: %d %d %d\n", i, probe->sbus_errors, probe->sbus_bytes);
         }
-        while(fgets(buffer, BUFFER_SIZE, stdin)){
-                //printf("%p %s\n", buffer, buffer);
-                char probe = buffer[0];
-                bool is_data = (probe>='0' && probe<='9' && buffer[1]==':');
-
-                started |= is_data;
-                if(started && !is_data){
-                        fprintf(stderr, "error, no data line %d %s", ctx->line_num, buffer);
-                        return 1;
-                }
-                if(started){
-                        int r = process_probe(ctx, probe-'0', buffer);
-                        if(r){
-                                fprintf(stderr, "process_probe error %d line:%d %s", r, ctx->line_num, buffer);
-                                return r;
-                        }
-                        struct timespec ts;
-                        if(clock_gettime(CLOCK_MONOTONIC, &ts)!=0){
-                                fprintf(stderr, "error get clock %s\n", strerror(errno));
-                                return 1;
-                        }
-                        if(diffts(lts, ts)>250){
-                                printf("\x1B[1;1H");
-                                printf("%d\n", ctx->line_num);
-                                dump_result(ctx, samplerate, true);
-                                lts=ts;
-                        }
-
-                }
-                ctx->line_num++;
-        }
-        return 0;
 }
 
 
-
 //process incoming data
-int process_data_binary(context_t *ctx, int samplerate){
+int process_data_binary(context_t *ctx, int samplerate, bool sbus_mode){
 
         struct timespec lts;
         if(clock_gettime(CLOCK_MONOTONIC, &lts)!=0){
                 fprintf(stderr, "error get clock %s\n", strerror(errno));
                 return 1;
         }
-        init_probes(ctx, 7);//0-7 probes
+        init_probes(ctx, 7, sbus_mode);//0-7 probes
         int i;
         while((i=fgetc(stdin))!=EOF){
                 //printf("%p %s\n", buffer, buffer);
                 int mask = 1;
                 for(int probe_idx=0;probe_idx<8;probe_idx++){
-                        feed_bit(ctx, probe_idx, &ctx->probes[probe_idx], i & mask);
+                        if(sbus_mode) {
+                                feed_bit_sbus(ctx, probe_idx, &ctx->probes[probe_idx], i & mask);
+                        } else {
+                                feed_bit(ctx, probe_idx, &ctx->probes[probe_idx], i & mask);
+                        }
+                        
                         mask<<=1;
                 }
 
@@ -420,7 +406,11 @@ int process_data_binary(context_t *ctx, int samplerate){
                         if(diffts(lts, ts)>250){
                                 printf("\x1B[1;1H");
                                 printf("%d\n", ctx->line_num);
-                                dump_result(ctx, samplerate, true);
+                                if(sbus_mode){
+                                        dump_result_sbus(ctx);
+                                } else {
+                                        dump_result(ctx, samplerate, true);
+                                }
                                 lts=ts;
                         }
                 }
@@ -434,9 +424,8 @@ int process_data_binary(context_t *ctx, int samplerate){
 //usage help
 void show_help(){
         printf("pwm (servo) signal analyzer, for using with sigrok logic analyzer software\n");
-        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v debug_level] [-d data_dump_file] [-h] < sigrok_binary_file\n");
-        //printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=20k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O hex | ./pwm -s 20\n");//hex mode has sample losing issues 
-        printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=100k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O binary | ./pwm -s 100 -d values.csv\n");
+        printf(" Usage: pwm [-n buffer_length] [-s sample_rate_khz] [-v debug_level] [--sbus] [-d data_dump_file] [-h] < sigrok_binary_file\n");
+        printf(" Usage: sigrok-cli -d fx2lafw --config samplerate=100k --continuous -p 0,1,2,3,4,5 -o /dev/stdout -O binary | ./pwm [-s 100] -d values.csv\n");
 }
 
 
@@ -445,7 +434,7 @@ int main(int argc, char** argv){
         context_t context;
         int ch;
         int samplerate=0;
-        bool binary_fmt = true;//sigrok hex mode has bug - skips samples
+        bool sbus_mode = false;//frsky sbus decoder
 
         static struct option longopts[] = {
                 { "help", no_argument, NULL, 'h' },
@@ -453,7 +442,7 @@ int main(int argc, char** argv){
                 { "length", required_argument, NULL, 'n' },
                 { "samplerate", required_argument, NULL, 's' },
                 { "dump", required_argument, NULL, 'd' },
-                //{ "binary", no_argument, NULL, 'b' },
+                { "sbus", optional_argument, NULL, 'b' },
 
                 { NULL, 0, NULL, 0 }
         };
@@ -475,9 +464,9 @@ int main(int argc, char** argv){
                 case 'd':
                     dump_file = fopen(optarg, "w");
                     break;
-                //case 'b':
-                //    binary_fmt = true;
-                //    break;
+                case 'b':
+                    sbus_mode = true;
+                    break;
                 default:
                     show_help();
                     return 1;
@@ -487,14 +476,13 @@ int main(int argc, char** argv){
         context.probes_n = 0;
         context.max_time = 0;
         context.line_num = 1;
-
-        int r = 0;
-        if(binary_fmt){
-                r = process_data_binary(&context, samplerate);
-        }else{
-                //r = process_data_hex(&context, samplerate);
-                r = 1;
+        context.bit_interval = samplerate/100;//sbus has 100000 bit per second
+        if(sbus_mode && context.bit_interval<10){
+                fprintf(stderr, "sbus decoder need at least 1000k samplerate\n");
         }
+
+        int r = 1;
+        r = process_data_binary(&context, samplerate, sbus_mode);
         if(r){
                 fprintf(stderr, "error process_data %d\n", r);
                 return 1;
@@ -503,7 +491,11 @@ int main(int argc, char** argv){
         if(dump_file) {
                 fclose(dump_file);
         }
-        dump_result(&context, samplerate, false);
+        if(sbus_mode){
+                dump_result_sbus(&context);
+        } else {
+                dump_result(&context, samplerate, false);
+        }
 
         return 0;
 }
