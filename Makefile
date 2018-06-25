@@ -21,5 +21,5 @@ $(OBJ_DIR)/%.o: %.c
 	@$(CC) -c -o $@ $(CFLAGS) $<
 
 
-test: $(PWM)
+test_sbus: $(PWM)
 	./$(PWM) -s 2000 -b -d values.csv <test_data_sbus >r

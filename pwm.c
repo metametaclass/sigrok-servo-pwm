@@ -134,6 +134,8 @@ void update_average(average_data_t *avg, int value){
         }
 }
 
+#define MAX_SBUS_PACKET_SIZE 25
+
 //probe(logic input) data and timing
 typedef struct probe_data{
         int time;
@@ -151,6 +153,12 @@ typedef struct probe_data{
         int sbus_errors;
         int sbus_bytes;
         uint16_t sbus_bits;
+        int parity;
+        int parity_errors;
+        int stop_bits;
+        int sbus_last_byte_time;
+        int sbus_byte_counter;
+        uint8_t sbus_packet[MAX_SBUS_PACKET_SIZE];
 
         average_data_t pulse_width_avg;
         average_data_t period_avg;
@@ -219,11 +227,32 @@ void feed_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
 }
 
 void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
-        (void) ctx;
+        (void) ctx;                    
         if((dump_file!=NULL)){
-                fprintf(dump_file, "t:%8.8x p:%d v:%4.4x\n", data->time, probe_idx, data->sbus_bits);
+                fprintf(dump_file, "t:%8.8x p:%d v:%4.4x parity:%d stop:%d\n", data->time, probe_idx, data->sbus_bits, data->parity, data->stop_bits);
         }
-        data->sbus_bytes++;
+        if(data->parity!=1){
+            data->parity_errors++;
+        }else{
+            if( (data->time - data->sbus_last_byte_time) > 22*ctx->bit_interval) {                
+                if((dump_file!=NULL)){
+                        fprintf(dump_file, "t:%8.8x p:%d data:", data->time, probe_idx);
+                        for(int i=0;i<data->sbus_byte_counter;i++){
+                                fprintf(dump_file, "%2.2x ", data->sbus_packet[i]);
+                        }
+                        fprintf(dump_file, "\n");
+
+                }
+                
+                data->sbus_byte_counter = 0;
+            }
+            if(data->sbus_byte_counter<MAX_SBUS_PACKET_SIZE){
+                    data->sbus_packet[data->sbus_byte_counter] = data->sbus_bits & 0xFF;
+                    data->sbus_byte_counter++;
+            }
+            data->sbus_last_byte_time = data->time;
+            data->sbus_bytes++;
+        }
 }
 
 void process_sbus_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
@@ -244,12 +273,21 @@ void process_sbus_bit(context_t *ctx, int probe_idx, probe_data_t *data, int val
         if (((shift + ctx->bit_interval/2) % ctx->bit_interval) == 0) {
            //sample bit
             //printf("sample at %8.8x\n", data->time);
-            data->sbus_bits <<= 1;
             if(value) {
-                 data->sbus_bits |= 1;
+                 if(data->sbus_bit_counter<8){
+                        data->sbus_bits <<= 1;
+                        data->sbus_bits |= 1;
+                 }
+                 if (data->sbus_bit_counter<9) {
+                        data->parity ^= 1;
+                 }
+            }else {
+                if(data->sbus_bit_counter>=9){
+                        data->stop_bits++;
+                }
             }
             data->sbus_bit_counter++;           
-            if(data->sbus_bit_counter>=11){
+            if(data->sbus_bit_counter>=11){                
                check_sbus_byte(ctx, probe_idx, data);
                data->is_sbus_active = 0;
             }
@@ -271,6 +309,9 @@ void feed_bit_sbus(context_t *ctx, int probe_idx, probe_data_t *data, int value)
                         data->sbus_bits = 0;
                         data->sbus_bit_counter = 0;
                         data->start_bit_count = 0;
+                        data->parity = 0;
+                        data->stop_bits = 0;
+
                 }
         }
         data->last_value = value;
@@ -298,6 +339,12 @@ int init_probes(context_t *ctx, int probe_idx, bool sbus_mode){
                 probe->start_bit_count = 0;
                 probe->sbus_bits = 0;
                 probe->sbus_errors = 0;
+                probe->parity = 0;
+                probe->parity_errors = 0;
+                probe->stop_bits = 0;
+                probe->sbus_last_byte_time = 0;
+                probe->sbus_byte_counter = 0;
+
                 init_average(&probe->period_avg);
                 init_average(&probe->pulse_width_avg);
                 ctx->probes_n++;
@@ -369,7 +416,7 @@ void dump_result(context_t *ctx, int samplerate, bool brief){
 void dump_result_sbus(context_t *ctx){
         for(int i=0;i<ctx->probes_n;i++){
                 probe_data_t *probe = &ctx->probes[i];
-                printf("p:%d errors:%d bytes:%d\n", i, probe->sbus_errors, probe->sbus_bytes);
+                printf("p:%d errors:%d parity_errors:%d bytes:%d\n", i, probe->sbus_errors, probe->parity_errors, probe->sbus_bytes);
         }
 }
 
