@@ -229,6 +229,44 @@ void feed_bit(context_t *ctx, int probe_idx, probe_data_t *data, int value){
 
 }
 
+
+void decode_sbus_packet(FILE *f, uint8_t *packet, size_t len){        
+    if(len!=25 || packet[0]!=0x0F){
+        fprintf(f, "not SBus packet\n");
+        return;
+    }
+    (void)len;
+    //uint16_t current = 0;
+    int bits = 0;
+    for(int i=1;i<23;i++){
+        uint8_t b = packet[i];
+        for(int j=0;j<8;j++){
+            fprintf(f, "%d", b&1);
+            bits++;
+            b >>= 1;
+            if(bits==11) {
+                    fprintf(f, " ");
+                    bits = 0;
+            }
+            
+            /*if(b&1){
+                current |= 0x400;
+                //current |= 1;
+            }
+            b >>= 1;
+            current >>= 1;
+            //current <<= 1;
+            bits++;
+            if(bits==11) {
+                fprintf(f, "%4.4x ", current);
+                bits = 0;
+                current = 0;
+            }*/
+        }
+    }
+    fprintf(f, "\n");
+}
+
 void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
         (void) ctx;                    
         if((dump_file!=NULL)){
@@ -246,7 +284,7 @@ void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
                                 fprintf(dump_file, "%2.2x ", data->sbus_packet[i]);
                         }
                         fprintf(dump_file, "\n");
-
+                        decode_sbus_packet(dump_file, data->sbus_packet, data->sbus_byte_counter);
                 }
                 
                 data->sbus_byte_counter = 0;
@@ -427,7 +465,8 @@ void dump_result_sbus(context_t *ctx){
                         for(int j=0;j<probe->sbus_byte_counter_last;j++){
                                 printf("%2.2x ", probe->sbus_packet_last[j]);
                         }
-                        printf("\n");
+                        printf("\n");                    
+                        decode_sbus_packet(stdout, probe->sbus_packet_last, probe->sbus_byte_counter_last);
                 }
         }
 }
