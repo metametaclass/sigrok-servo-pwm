@@ -270,12 +270,12 @@ void decode_sbus_packet(FILE *f, uint8_t *packet, size_t len){
 void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
         (void) ctx;                    
         if((dump_file!=NULL)){
-                fprintf(dump_file, "t:%8.8x p:%d v:%4.4x parity:%d stop:%d\n", data->time, probe_idx, data->sbus_bits, data->parity, data->stop_bits);
+                //fprintf(dump_file, "t:%8.8x p:%d v:%4.4x parity:%d stop:%d\n", data->time, probe_idx, data->sbus_bits, data->parity, data->stop_bits);
         }
         if(data->parity!=1){
             data->parity_errors++;
         }else{
-            if( (data->time - data->sbus_last_byte_time) > 22*ctx->bit_interval) {                
+            if( (data->time - data->sbus_last_byte_time) > 22*ctx->bit_interval) {
                 data->sbus_byte_counter_last = data->sbus_byte_counter;
                 memcpy(data->sbus_packet_last, data->sbus_packet, sizeof(data->sbus_packet));
                 if((dump_file!=NULL)){
@@ -288,13 +288,18 @@ void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
                 }
                 
                 data->sbus_byte_counter = 0;
+                //printf("\x1B[1;1H");
             }
             if(data->sbus_byte_counter<MAX_SBUS_PACKET_SIZE){
                     data->sbus_packet[data->sbus_byte_counter] = data->sbus_bits & 0xFF;
+                    printf(" [%4.4x] ", data->sbus_bits);
                     data->sbus_byte_counter++;
             }
+            if( (data->sbus_byte_counter & 0x03)==0x00){
+                    printf("\n");
+            }
             data->sbus_last_byte_time = data->time;
-            data->sbus_bytes++;
+            data->sbus_bytes++;            
         }
 }
 
@@ -314,25 +319,28 @@ void process_sbus_bit(context_t *ctx, int probe_idx, probe_data_t *data, int val
         }
 
         if (((shift + ctx->bit_interval/2) % ctx->bit_interval) == 0) {
-           //sample bit
+            //sample bit
             //printf("sample at %8.8x\n", data->time);
-            if(value) {
-                 if(data->sbus_bit_counter<8){
-                        data->sbus_bits <<= 1;
-                        data->sbus_bits |= 1;
-                 }
-                 if (data->sbus_bit_counter<9) {
-                        data->parity ^= 1;
-                 }
-            }else {
-                if(data->sbus_bit_counter>=9){
-                        data->stop_bits++;
-                }
+            int bit_value = value?1:0;
+            printf("%d", bit_value);
+
+            if(data->sbus_bit_counter<8){
+                    data->sbus_bits <<= 1;
+                    data->sbus_bits |= bit_value;
             }
+            if (data->sbus_bit_counter<9) {
+                    data->parity ^= bit_value;
+            }
+
+            if( (data->sbus_bit_counter>=9) && !bit_value){
+                    data->stop_bits++;
+            }
+
             data->sbus_bit_counter++;           
             if(data->sbus_bit_counter>=11){                
+               printf(" ");
                check_sbus_byte(ctx, probe_idx, data);
-               data->is_sbus_active = 0;
+               data->is_sbus_active = 0;               
             }
         }
 
@@ -354,7 +362,9 @@ void feed_bit_sbus(context_t *ctx, int probe_idx, probe_data_t *data, int value)
                         data->start_bit_count = 0;
                         data->parity = 0;
                         data->stop_bits = 0;
-
+                        if( (data->time - data->sbus_last_byte_time) > 22*ctx->bit_interval) {
+                                printf("\x1B[1;1H");
+                        }
                 }
         }
         data->last_value = value;
@@ -501,7 +511,8 @@ int process_data_binary(context_t *ctx, int samplerate, bool sbus_mode){
                                 fprintf(stderr, "error get clock %s\n", strerror(errno));
                                 return 1;
                         }
-                        if(diffts(lts, ts)>250){
+                        (void)samplerate;
+/*                        if(diffts(lts, ts)>250){
                                 printf("\x1B[1;1H");
                                 printf("%d\n", ctx->line_num);
                                 if(sbus_mode){
@@ -510,7 +521,7 @@ int process_data_binary(context_t *ctx, int samplerate, bool sbus_mode){
                                         dump_result(ctx, samplerate, true);
                                 }
                                 lts=ts;
-                        }
+                        }*/
                 }
 
                 ctx->line_num++;
