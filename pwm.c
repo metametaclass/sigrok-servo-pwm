@@ -237,17 +237,25 @@ void decode_sbus_packet(FILE *f, uint8_t *packet, size_t len){
         return;
     }
     (void)len;
-    //uint16_t current = 0;
+    uint16_t current = 0;
     int bits = 0;
+    int channel = 0;
     for(int i=1;i<23;i++){
         uint8_t b = packet[i];
         for(int j=0;j<8;j++){
-            fprintf(f, "%d", b&1);
+            fprintf(f, "%d", b&1);             
             bits++;
+            current >>= 1;
+            current |= (b&1)?0x0400:0;
             b >>= 1;
             if(bits==11) {
-                    fprintf(f, " ");
+                    fprintf(f, " [%4d] ", current);
                     bits = 0;
+                    current = 0;
+                    channel++;
+                    if(channel==8){ 
+                            fprintf(f,"\n");
+                    }
             }
             
             /*if(b&1){
@@ -266,6 +274,8 @@ void decode_sbus_packet(FILE *f, uint8_t *packet, size_t len){
         }
     }
     fprintf(f, "\n");
+    uint8_t b = packet[23];
+    fprintf(f, "d17:%d d18:%d loss:%d f/s:%d\n", (b & 0x80)>>7, (b & 0x40)>>6, (b & 0x20)>>5, (b & 0x10)>>4);
 }
 
 void check_sbus_byte(context_t *ctx, int probe_idx, probe_data_t *data){
